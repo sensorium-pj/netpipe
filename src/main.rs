@@ -1,12 +1,15 @@
 mod receiver;
-use broker::{Broker, StdoutBroker, UdpBroker, WebSocketBroker};
+use broker::{Broker, HttpBroker, StdoutBroker, UdpBroker, WebSocketBroker};
 use receiver::{
-    ReceiverCreator, StdinReceiverCreator, UdpReceiverCreator, WebSocketReceiverCreator,
+    HttpReceiverCreator, ReceiverCreator, StdinReceiverCreator, UdpReceiverCreator,
+    WebSocketReceiverCreator,
 };
 mod broker;
+mod utils;
 use std::env;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args: Vec<String> = env::args().collect();
 
     let in_option = &args[1];
@@ -14,6 +17,7 @@ fn main() {
 
     let receiver_creators: Vec<Box<dyn ReceiverCreator>> = vec![
         Box::new(StdinReceiverCreator),
+        Box::new(HttpReceiverCreator),
         Box::new(WebSocketReceiverCreator),
         Box::new(UdpReceiverCreator),
     ];
@@ -24,6 +28,7 @@ fn main() {
 
     let brokers: Vec<Box<dyn Broker>> = vec![
         Box::new(StdoutBroker::new()),
+        Box::new(HttpBroker::new()),
         Box::new(WebSocketBroker::new()),
         Box::new(UdpBroker::new()),
     ];

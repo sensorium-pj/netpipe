@@ -1,7 +1,12 @@
-use regex::Regex;
+use actix_cors::Cors;
+use actix_web::web::Bytes;
+use actix_web::{web, App, Error, HttpResponse, HttpServer};
+use crossbeam::channel::{Receiver, Sender, TryRecvError};
 use std::cell::RefCell;
 use std::io::ErrorKind::{ConnectionAborted, ConnectionReset, WouldBlock};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::task::Poll;
+use std::time::Duration;
 use std::{
     net::{TcpListener, UdpSocket},
     sync::{Arc, Mutex},
@@ -9,6 +14,8 @@ use std::{
 };
 use tungstenite::error::Error::{Io, Protocol};
 use tungstenite::{accept, Message, WebSocket};
+
+use crate::utils::get_host_port;
 
 pub trait Broker {
     fn matches(&self, option: &String) -> bool;
@@ -41,6 +48,78 @@ impl Broker for StdoutBroker {
         if *self.enabled.borrow() {
             println!("{message}");
         }
+    }
+}
+
+struct ReceiverStream {
+    rx: web::Data<Receiver<String>>,
+}
+
+impl futures::Stream for ReceiverStream {
+    type Item = Result<Bytes, Error>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        match self.rx.try_recv() {
+            Ok(value) => Poll::Ready(Some(Ok(value.into()))),
+            Err(e) if e == TryRecvError::Empty => {
+                let waker = cx.waker().clone();
+                thread::spawn(move || {
+                    thread::sleep(Duration::new(0, 1_000_000));
+                    waker.wake();
+                });
+                Poll::Pending
+            }
+            Err(e) if e == TryRecvError::Disconnected => Poll::Ready(None),
+            Err(e) => panic!("Unknown error: {}", e),
+        }
+    }
+}
+
+pub struct HttpBroker {
+    rx: Receiver<String>,
+    tx: Sender<String>,
+}
+
+impl HttpBroker {
+    pub fn new() -> HttpBroker {
+        let (tx, rx) = crossbeam::channel::unbounded();
+        HttpBroker { rx, tx }
+    }
+}
+
+impl Broker for HttpBroker {
+    fn matches(&self, option: &String) -> bool {
+        return option.starts_with("http://");
+    }
+
+    fn add_destination(&self, option: &String) {
+        let addr = get_host_port(option);
+        let rx = self.rx.clone();
+        tokio::spawn(async {
+            async fn handler(rx: web::Data<Receiver<String>>) -> Result<HttpResponse, Error> {
+                Ok(HttpResponse::Ok().streaming(ReceiverStream { rx }))
+            }
+
+            let server = HttpServer::new(move || {
+                App::new()
+                    .wrap(Cors::permissive())
+                    .app_data(web::Data::new(rx.clone()))
+                    .service(web::resource("/").to(handler))
+                    .default_service(web::to(|| HttpResponse::NotFound()))
+            })
+            .bind(addr)
+            .unwrap()
+            .run();
+
+            server.await
+        });
+    }
+
+    fn send(&self, message: &String) {
+        self.tx.send(message.to_string() + "\n").unwrap();
     }
 }
 
@@ -146,17 +225,6 @@ impl Broker for WebSocketBroker {
             })
         }
     }
-}
-
-fn get_host_port(uri: &String) -> String {
-    return Regex::new(r"://(.*)/?")
-        .unwrap()
-        .captures(uri)
-        .unwrap()
-        .get(1)
-        .unwrap()
-        .as_str()
-        .to_string();
 }
 
 pub struct UdpBroker {
