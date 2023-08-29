@@ -1,8 +1,8 @@
 mod receiver;
-use broker::{Broker, HttpBroker, StdoutBroker, UdpBroker, WebSocketBroker};
+use broker::{Broker, HttpBroker, StdoutBroker, UdpBroker, WebSocketBroker, WebSocketClientBroker};
 use receiver::{
     HttpReceiverCreator, ReceiverCreator, StdinReceiverCreator, UdpReceiverCreator,
-    WebSocketReceiverCreator,
+    WebSocketReceiverCreator, WebSocketServerReceiverCreator,
 };
 mod broker;
 mod utils;
@@ -19,6 +19,7 @@ async fn main() {
         Box::new(StdinReceiverCreator),
         Box::new(HttpReceiverCreator),
         Box::new(WebSocketReceiverCreator),
+        Box::new(WebSocketServerReceiverCreator),
         Box::new(UdpReceiverCreator),
     ];
 
@@ -30,6 +31,7 @@ async fn main() {
         Box::new(StdoutBroker::new()),
         Box::new(HttpBroker::new()),
         Box::new(WebSocketBroker::new()),
+        Box::new(WebSocketClientBroker::new()),
         Box::new(UdpBroker::new()),
     ];
 

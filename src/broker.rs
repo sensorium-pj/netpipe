@@ -13,7 +13,9 @@ use std::{
     thread,
 };
 use tungstenite::error::Error::{Io, Protocol};
-use tungstenite::{accept, Message, WebSocket};
+use tungstenite::stream::MaybeTlsStream;
+use tungstenite::{accept, connect, Message, WebSocket};
+use url::Url;
 
 use crate::utils::get_host_port;
 
@@ -224,6 +226,99 @@ impl Broker for WebSocketBroker {
                 socket.can_write()
             })
         }
+    }
+}
+
+pub struct WebSocketClientBroker {
+    socket_list: Arc<Mutex<Vec<WebSocket<MaybeTlsStream<TcpStream>>>>>,
+}
+
+fn get_peer_addr(socket: &WebSocket<MaybeTlsStream<TcpStream>>) -> String {
+    match &socket.get_ref() {
+        MaybeTlsStream::Plain(stream) => stream.peer_addr().unwrap().to_string(),
+        #[cfg(feature = "native-tls")]
+        MaybeTlsStream::NativeTls(stream) => stream.get_ref().peer_addr().unwrap().to_string(),
+        #[cfg(feature = "__rustls-tls")]
+        MaybeTlsStream::Rustls(stream) => stream.get_ref().peer_addr().unwrap().to_string(),
+        &&_ => todo!(),
+    }
+}
+
+impl WebSocketClientBroker {
+    pub fn new() -> WebSocketClientBroker {
+        WebSocketClientBroker {
+            socket_list: Arc::new(Mutex::new(vec![])),
+        }
+    }
+}
+
+impl Broker for WebSocketClientBroker {
+    fn matches(&self, option: &String) -> bool {
+        return option.starts_with("ws-client://");
+    }
+
+    fn add_destination(&self, option: &String) {
+        let url = format!("ws://{}", option.trim_start_matches("ws-client://"));
+        let (socket, _) = connect(Url::parse(&url).unwrap()).unwrap();
+        if let MaybeTlsStream::Plain(stream) = socket.get_ref() {
+            stream.set_nonblocking(true).unwrap();
+        }
+        self.socket_list.lock().unwrap().push(socket);
+    }
+
+    fn send(&self, message: &String) {
+        self.socket_list.lock().unwrap().retain_mut(|socket| {
+            match socket.read_message() {
+                Ok(message) if message.is_close() => {
+                    eprintln!("Socket closed: {}.", get_peer_addr(socket));
+                    return false;
+                }
+                Ok(message) => panic!("[003] unknown message: {message}"),
+                Err(Io(e)) if e.kind() == WouldBlock => (),
+                Err(Io(e)) if e.kind() == ConnectionReset => {
+                    eprintln!("Connection reset: {}.", get_peer_addr(socket));
+                    return false;
+                }
+                Err(Protocol(tungstenite::error::ProtocolError::ResetWithoutClosingHandshake)) => {
+                    eprintln!(
+                        "Reset without closing handshake: {}.",
+                        get_peer_addr(socket)
+                    );
+                    return false;
+                }
+                Err(e) => {
+                    dbg!(e);
+                    panic!("[001] encountered unknown error");
+                }
+            }
+            match socket.write_message(Message::text(message)) {
+                Ok(()) => true,
+                Err(Io(e)) if e.kind() == ConnectionAborted => {
+                    eprintln!("Connection aborted: {}.", get_peer_addr(socket));
+                    return false;
+                }
+                Err(Io(e)) if e.kind() == ConnectionReset => {
+                    eprintln!("Connection reset: {}.", get_peer_addr(socket));
+                    return false;
+                }
+                Err(Io(e)) if e.kind() == WouldBlock => {
+                    eprintln!("Err: WouldBlock in socket.write_message");
+                    return false;
+                }
+                Err(Protocol(tungstenite::error::ProtocolError::ResetWithoutClosingHandshake)) => {
+                    eprintln!(
+                        "Reset without closing handshake: {}.",
+                        get_peer_addr(socket)
+                    );
+                    return false;
+                }
+                Err(e) => {
+                    dbg!(e);
+                    panic!("[002] encountered unknown error");
+                }
+            };
+            socket.can_write()
+        })
     }
 }
 

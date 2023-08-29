@@ -1,7 +1,7 @@
 use regex::Regex;
 
 pub fn get_host_port(uri: &String) -> String {
-    return Regex::new(r"://(.*)/?")
+    return Regex::new(r"://(.*?)(/.*)?$")
         .unwrap()
         .captures(uri)
         .unwrap()

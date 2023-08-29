@@ -2,9 +2,13 @@ use actix_cors::Cors;
 use actix_web::{web, App, Error, HttpResponse, HttpServer};
 use futures::StreamExt;
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
+use std::io::ErrorKind::{ConnectionReset, WouldBlock};
+use std::net::TcpListener;
 use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
 use std::{io::stdin, net::UdpSocket, sync::mpsc, thread};
-use tungstenite::connect;
+use tungstenite::error::Error::{Io, Protocol};
+use tungstenite::{accept, connect};
 use url::Url;
 
 use crate::utils::get_host_port;
@@ -52,10 +56,10 @@ impl ReceiverCreator for HttpReceiverCreator {
 
             let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
             builder
-                .set_private_key_file("./cert/server.key", SslFiletype::PEM)
+                .set_private_key_file("../netpipe/cert/server.key", SslFiletype::PEM)
                 .unwrap();
             builder
-                .set_certificate_chain_file("./cert/server.crt")
+                .set_certificate_chain_file("../netpipe/cert/server.crt")
                 .unwrap();
 
             let server = HttpServer::new(move || {
@@ -88,6 +92,67 @@ impl ReceiverCreator for WebSocketReceiverCreator {
         thread::spawn(move || loop {
             let message = socket.read_message().unwrap();
             tx.send(message.into_text().unwrap()).unwrap();
+        });
+        return Box::new(rx.into_iter());
+    }
+}
+
+pub struct WebSocketServerReceiverCreator;
+impl ReceiverCreator for WebSocketServerReceiverCreator {
+    fn matches(&self, option: &String) -> bool {
+        return option.starts_with("ws-server://");
+    }
+
+    fn create_receiver(&self, option: &String) -> Box<dyn Iterator<Item = String>> {
+        let url = format!("ws://{}", option.trim_start_matches("ws-server://"));
+        let sockets = Arc::new(Mutex::new(Vec::new()));
+        let sockets_ref = sockets.clone();
+        let server = TcpListener::bind(get_host_port(&url)).unwrap();
+        thread::spawn(move || {
+            for stream in server.incoming() {
+                let stream = stream.unwrap();
+                let socket = accept(stream).unwrap();
+                socket.get_ref().set_nonblocking(true).unwrap();
+                eprintln!("Connected: {}.", socket.get_ref().peer_addr().unwrap());
+                sockets_ref.lock().unwrap().push(socket);
+            }
+        });
+
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || loop {
+            sockets.lock().unwrap().retain_mut(|socket| {
+                match socket.read_message() {
+                    Ok(message) if message.is_close() => {
+                        eprintln!("Socket closed: {}.", socket.get_ref().peer_addr().unwrap());
+                        return false;
+                    }
+                    Ok(message) => {
+                        tx.send(message.into_text().unwrap()).unwrap();
+                    }
+                    Err(Io(e)) if e.kind() == WouldBlock => (),
+                    Err(Io(e)) if e.kind() == ConnectionReset => {
+                        eprintln!(
+                            "Connection reset: {}.",
+                            socket.get_ref().peer_addr().unwrap()
+                        );
+                        return false;
+                    }
+                    Err(Protocol(
+                        tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
+                    )) => {
+                        eprintln!(
+                            "Reset without closing handshake: {}.",
+                            socket.get_ref().peer_addr().unwrap()
+                        );
+                        return false;
+                    }
+                    Err(e) => {
+                        dbg!(e);
+                        panic!("[001] encountered unknown error");
+                    }
+                }
+                socket.can_write()
+            });
         });
         return Box::new(rx.into_iter());
     }
