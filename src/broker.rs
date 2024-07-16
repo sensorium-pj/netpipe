@@ -159,7 +159,7 @@ impl Broker for WebSocketBroker {
                 let stream = stream.unwrap();
                 let socket = accept(stream).unwrap();
                 socket.get_ref().set_nonblocking(true).unwrap();
-                eprintln!("Connected: {}.", socket.get_ref().peer_addr().unwrap());
+                eprintln!("Connected: {}.", get_tcp_peer_addr(&socket));
                 sockets_ref.lock().unwrap().push(socket);
             }
         });
@@ -171,16 +171,13 @@ impl Broker for WebSocketBroker {
             sockets.lock().unwrap().retain_mut(|socket| {
                 match socket.read_message() {
                     Ok(message) if message.is_close() => {
-                        eprintln!("Socket closed: {}.", socket.get_ref().peer_addr().unwrap());
+                        eprintln!("Socket closed: {}.", get_tcp_peer_addr(socket));
                         return false;
                     }
                     Ok(message) => panic!("[003] unknown message: {message}"),
                     Err(Io(e)) if e.kind() == WouldBlock => (),
                     Err(Io(e)) if e.kind() == ConnectionReset => {
-                        eprintln!(
-                            "Connection reset: {}.",
-                            socket.get_ref().peer_addr().unwrap()
-                        );
+                        eprintln!("Connection reset: {}.", get_tcp_peer_addr(socket));
                         return false;
                     }
                     Err(Protocol(
@@ -188,7 +185,7 @@ impl Broker for WebSocketBroker {
                     )) => {
                         eprintln!(
                             "Reset without closing handshake: {}.",
-                            socket.get_ref().peer_addr().unwrap()
+                            get_tcp_peer_addr(socket)
                         );
                         return false;
                     }
@@ -200,17 +197,11 @@ impl Broker for WebSocketBroker {
                 match socket.write_message(Message::text(message)) {
                     Ok(()) => true,
                     Err(Io(e)) if e.kind() == ConnectionAborted => {
-                        eprintln!(
-                            "Connection aborted: {}.",
-                            socket.get_ref().peer_addr().unwrap()
-                        );
+                        eprintln!("Connection aborted: {}.", get_tcp_peer_addr(socket));
                         return false;
                     }
                     Err(Io(e)) if e.kind() == ConnectionReset => {
-                        eprintln!(
-                            "Connection reset: {}.",
-                            socket.get_ref().peer_addr().unwrap()
-                        );
+                        eprintln!("Connection reset: {}.", get_tcp_peer_addr(socket));
                         return false;
                     }
                     Err(Io(e)) if e.kind() == WouldBlock => {
@@ -222,7 +213,7 @@ impl Broker for WebSocketBroker {
                     )) => {
                         eprintln!(
                             "Reset without closing handshake: {}.",
-                            socket.get_ref().peer_addr().unwrap()
+                            get_tcp_peer_addr(socket)
                         );
                         return false;
                     }
@@ -250,6 +241,13 @@ fn get_peer_addr(socket: &WebSocket<MaybeTlsStream<TcpStream>>) -> String {
         MaybeTlsStream::Rustls(stream) => stream.get_ref().peer_addr().unwrap().to_string(),
         &&_ => todo!(),
     }
+}
+
+fn get_tcp_peer_addr(socket: &WebSocket<TcpStream>) -> String {
+    socket
+        .get_ref()
+        .peer_addr()
+        .map_or("unknown address".to_owned(), |f| f.to_string())
 }
 
 impl WebSocketClientBroker {
