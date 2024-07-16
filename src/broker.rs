@@ -81,6 +81,7 @@ impl futures::Stream for ReceiverStream {
 }
 
 pub struct HttpBroker {
+    enabled: RefCell<bool>,
     rx: Receiver<String>,
     tx: Sender<String>,
 }
@@ -88,7 +89,11 @@ pub struct HttpBroker {
 impl HttpBroker {
     pub fn new() -> HttpBroker {
         let (tx, rx) = crossbeam::channel::unbounded();
-        HttpBroker { rx, tx }
+        HttpBroker {
+            rx,
+            tx,
+            enabled: RefCell::new(false),
+        }
     }
 }
 
@@ -98,6 +103,7 @@ impl Broker for HttpBroker {
     }
 
     fn add_destination(&self, option: &String) {
+        self.enabled.replace(true);
         let addr = get_host_port(option);
         let rx = self.rx.clone();
         tokio::spawn(async {
@@ -121,7 +127,9 @@ impl Broker for HttpBroker {
     }
 
     fn send(&self, message: &String) {
-        self.tx.send(message.to_string() + "\n").unwrap();
+        if *self.enabled.borrow() {
+            self.tx.send(message.to_string() + "\n").unwrap();
+        }
     }
 }
 

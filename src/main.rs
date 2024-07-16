@@ -40,7 +40,8 @@ async fn main() {
         broker.add_destination(option);
     }
 
-    for message in receiver {
+    loop {
+        let message = receiver.recv().unwrap();
         for broker in brokers.iter() {
             broker.send(&message);
         }

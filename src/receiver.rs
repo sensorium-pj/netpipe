@@ -4,7 +4,7 @@ use futures::StreamExt;
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
 use std::io::ErrorKind::{ConnectionReset, WouldBlock};
 use std::net::TcpListener;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::{io::stdin, net::UdpSocket, sync::mpsc, thread};
 use tungstenite::error::Error::{Io, Protocol};
@@ -15,7 +15,7 @@ use crate::utils::get_host_port;
 
 pub trait ReceiverCreator {
     fn matches(&self, option: &String) -> bool;
-    fn create_receiver(&self, option: &String) -> Box<dyn Iterator<Item = String>>;
+    fn create_receiver(&self, option: &String) -> Receiver<String>;
 }
 
 pub struct StdinReceiverCreator;
@@ -24,8 +24,14 @@ impl ReceiverCreator for StdinReceiverCreator {
         return option.eq("stdin");
     }
 
-    fn create_receiver(&self, _option: &String) -> Box<dyn Iterator<Item = String>> {
-        return Box::new(stdin().lines().into_iter().map(|l| l.unwrap()));
+    fn create_receiver(&self, _option: &String) -> Receiver<String> {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || loop {
+            let mut buf = String::new();
+            stdin().read_line(&mut buf).unwrap();
+            tx.send(buf.trim().to_string()).unwrap();
+        });
+        return rx;
     }
 }
 
@@ -35,7 +41,7 @@ impl ReceiverCreator for HttpReceiverCreator {
         return option.starts_with("https://");
     }
 
-    fn create_receiver(&self, option: &String) -> Box<dyn Iterator<Item = String>> {
+    fn create_receiver(&self, option: &String) -> Receiver<String> {
         let (tx, rx) = mpsc::channel();
 
         let addr = get_host_port(option);
@@ -76,7 +82,7 @@ impl ReceiverCreator for HttpReceiverCreator {
             server.await
         });
 
-        return Box::new(rx.into_iter());
+        return rx;
     }
 }
 
@@ -86,14 +92,14 @@ impl ReceiverCreator for WebSocketReceiverCreator {
         return option.starts_with("ws://");
     }
 
-    fn create_receiver(&self, option: &String) -> Box<dyn Iterator<Item = String>> {
+    fn create_receiver(&self, option: &String) -> Receiver<String> {
         let (mut socket, _) = connect(Url::parse(&option).unwrap()).unwrap();
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || loop {
             let message = socket.read_message().unwrap();
             tx.send(message.into_text().unwrap()).unwrap();
         });
-        return Box::new(rx.into_iter());
+        return rx;
     }
 }
 
@@ -103,7 +109,7 @@ impl ReceiverCreator for WebSocketServerReceiverCreator {
         return option.starts_with("ws-server://");
     }
 
-    fn create_receiver(&self, option: &String) -> Box<dyn Iterator<Item = String>> {
+    fn create_receiver(&self, option: &String) -> Receiver<String> {
         let url = format!("ws://{}", option.trim_start_matches("ws-server://"));
         let sockets = Arc::new(Mutex::new(Vec::new()));
         let sockets_ref = sockets.clone();
@@ -154,7 +160,7 @@ impl ReceiverCreator for WebSocketServerReceiverCreator {
                 socket.can_write()
             });
         });
-        return Box::new(rx.into_iter());
+        return rx;
     }
 }
 
@@ -164,7 +170,7 @@ impl ReceiverCreator for UdpReceiverCreator {
         return true;
     }
 
-    fn create_receiver(&self, option: &String) -> Box<dyn Iterator<Item = String>> {
+    fn create_receiver(&self, option: &String) -> Receiver<String> {
         let socket = UdpSocket::bind(option).unwrap();
 
         let (tx, rx) = mpsc::channel();
@@ -174,6 +180,6 @@ impl ReceiverCreator for UdpReceiverCreator {
             let buf = &buf[..buf_size];
             tx.send(String::from_utf8(buf.to_vec()).unwrap()).unwrap();
         });
-        return Box::new(rx.into_iter());
+        return rx;
     }
 }
