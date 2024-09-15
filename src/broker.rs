@@ -169,7 +169,14 @@ impl Broker for WebSocketBroker {
     fn send(&self, message: &String) {
         for sockets in self.sockets_list.borrow().iter() {
             sockets.lock().unwrap().retain_mut(|socket| {
-                match socket.read_message() {
+                // println!("before socket.read");
+
+                let read_result = socket.read_message();
+                // println!("after socket.read");
+
+                match read_result{
+                //match socket.read_message() {
+                    //
                     Ok(message) if message.is_close() => {
                         eprintln!("Socket closed: {}.", get_tcp_peer_addr(socket));
                         return false;
@@ -193,9 +200,13 @@ impl Broker for WebSocketBroker {
                         dbg!(e);
                         panic!("[001] encountered unknown error");
                     }
+                    //
+
                 }
+                // println!("before socket.write");
+
                 match socket.write_message(Message::text(message)) {
-                    Ok(()) => true,
+                    Ok(()) => (),
                     Err(Io(e)) if e.kind() == ConnectionAborted => {
                         eprintln!("Connection aborted: {}.", get_tcp_peer_addr(socket));
                         return false;
@@ -208,6 +219,10 @@ impl Broker for WebSocketBroker {
                         eprintln!("Err: WouldBlock in socket.write_message");
                         return false;
                     }
+                    Err(Io(e)) if e.kind() == WouldBlock => {
+                        println!("Err: WouldBlock in socket.write_message")
+                    },
+
                     Err(Protocol(
                         tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
                     )) => {
@@ -217,11 +232,14 @@ impl Broker for WebSocketBroker {
                         );
                         return false;
                     }
+
                     Err(e) => {
                         dbg!(e);
                         panic!("[002] encountered unknown error");
                     }
                 };
+                // println!("before socket.can_write");
+
                 socket.can_write()
             })
         }
